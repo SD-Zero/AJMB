@@ -68,6 +68,7 @@
       gap: 20px;
       flex-wrap: wrap;
       justify-content: center;
+      margin-bottom: 30px;
     }
     .canvas-card {
       text-align: center;
@@ -81,13 +82,58 @@
       max-width: 100%;
       height: auto;
       border-radius: 4px;
-      /* Grid background to clearly show transparency */
       background-image: linear-gradient(45deg, #2a2a38 25%, transparent 25%), 
                         linear-gradient(-45deg, #2a2a38 25%, transparent 25%), 
                         linear-gradient(45deg, transparent 75%, #2a2a38 75%), 
                         linear-gradient(-45deg, transparent 75%, #2a2a38 75%);
       background-size: 16px 16px;
       background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+    }
+    /* Palette Section */
+    .palette-section {
+      background: #313244;
+      padding: 20px;
+      border-radius: 8px;
+    }
+    .palette-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+    .palette-header h3 {
+      margin: 0;
+      color: #89b4fa;
+    }
+    .palette-stats {
+      font-size: 14px;
+      color: #a6adc8;
+    }
+    .palette-grid {
+      display: grid;
+      grid-template-columns: repeat(19, 1fr);
+      gap: 6px;
+    }
+    .color-swatch {
+      aspect-ratio: 1;
+      border-radius: 4px;
+      box-sizing: border-box;
+      transition: transform 0.15s, opacity 0.2s, box-shadow 0.2s;
+      cursor: pointer;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    /* Dim unused colors once conversion completes */
+    .palette-grid.has-converted .color-swatch {
+      opacity: 0.25;
+      transform: scale(0.9);
+    }
+    /* Highlight used colors with glowing outline */
+    .palette-grid.has-converted .color-swatch.used {
+      opacity: 1;
+      transform: scale(1.1);
+      border: 2px solid #ffffff;
+      box-shadow: 0 0 10px #89b4fa, 0 0 4px #ffffff;
+      z-index: 2;
     }
   </style>
 </head>
@@ -111,6 +157,14 @@
         <h3>Masterblocks Matched</h3>
         <canvas id="outputCanvas"></canvas>
       </div>
+    </div>
+
+    <div class="palette-section">
+      <div class="palette-header">
+        <h3>Masterblocks Palette (19x11)</h3>
+        <span class="palette-stats" id="paletteStats">Upload an image and convert to highlight used colors</span>
+      </div>
+      <div class="palette-grid" id="paletteGrid"></div>
     </div>
   </div>
 
@@ -141,7 +195,7 @@
       "#26333A"
     ];
 
-    // Pre-calculate RGB values for faster matching performance
+    // Pre-calculate RGB values for matching performance
     const PALETTE_RGB = PALETTE_HEX.map(hex => {
       const cleanHex = hex.replace('#', '');
       return [
@@ -157,21 +211,31 @@
     const outCanvas = document.getElementById('outputCanvas');
     const origCtx = origCanvas.getContext('2d');
     const outCtx = outCanvas.getContext('2d');
+    const paletteGrid = document.getElementById('paletteGrid');
+    const paletteStats = document.getElementById('paletteStats');
 
     let loadedImage = null;
+
+    // Render the 19x11 Palette Grid Swatches
+    PALETTE_HEX.forEach((hex, index) => {
+      const swatch = document.createElement('div');
+      swatch.className = 'color-swatch';
+      swatch.style.backgroundColor = hex;
+      swatch.title = hex;
+      swatch.dataset.index = index;
+      paletteGrid.appendChild(swatch);
+    });
 
     imageLoader.addEventListener('change', (e) => {
       const reader = new FileReader();
       reader.onload = (event) => {
         loadedImage = new Image();
         loadedImage.onload = () => {
-          // Set exact canvas dimensions (No resizing)
           origCanvas.width = loadedImage.width;
           origCanvas.height = loadedImage.height;
           outCanvas.width = loadedImage.width;
           outCanvas.height = loadedImage.height;
 
-          // Render original image
           origCtx.drawImage(loadedImage, 0, 0);
         };
         loadedImage.src = event.target.result;
@@ -181,15 +245,14 @@
       }
     });
 
-    // Human perception weighted distance calculation
-    function getClosestColor(r, g, b) {
+    // Human-weighted perceptual color distance formula
+    function getClosestColorIndex(r, g, b) {
       let minDistance = Infinity;
-      let closest = PALETTE_RGB[0];
+      let closestIndex = 0;
 
       for (let i = 0; i < PALETTE_RGB.length; i++) {
         const [pr, pg, pb] = PALETTE_RGB[i];
         
-        // Red-mean formula balances human vision sensitivity
         const rmean = (r + pr) / 2;
         const dr = r - pr;
         const dg = g - pg;
@@ -203,10 +266,10 @@
 
         if (distance < minDistance) {
           minDistance = distance;
-          closest = PALETTE_RGB[i];
+          closestIndex = i;
         }
       }
-      return closest;
+      return closestIndex;
     }
 
     convertBtn.addEventListener('click', () => {
@@ -220,7 +283,9 @@
       const imgData = origCtx.getImageData(0, 0, width, height);
       const data = imgData.data;
 
-      // Loop over raw pixels (4 entries per pixel: R, G, B, A)
+      // Track indexes of used colors
+      const usedColorIndices = new Set();
+
       for (let i = 0; i < data.length; i += 4) {
         const alpha = data[i + 3];
 
@@ -231,15 +296,32 @@
         const g = data[i + 1];
         const b = data[i + 2];
 
-        const [nr, ng, nb] = getClosestColor(r, g, b);
+        const matchIdx = getClosestColorIndex(r, g, b);
+        const [nr, ng, nb] = PALETTE_RGB[matchIdx];
 
         data[i] = nr;
         data[i + 1] = ng;
         data[i + 2] = nb;
+
+        usedColorIndices.add(matchIdx);
       }
 
-      // Output matched image
       outCtx.putImageData(imgData, 0, 0);
+
+      // Update the 19x11 Palette Grid highlights
+      paletteGrid.classList.add('has-converted');
+      const swatches = paletteGrid.querySelectorAll('.color-swatch');
+      
+      swatches.forEach(swatch => {
+        const idx = parseInt(swatch.dataset.index);
+        if (usedColorIndices.has(idx)) {
+          swatch.classList.add('used');
+        } else {
+          swatch.classList.remove('used');
+        }
+      });
+
+      paletteStats.textContent = `Colors used: ${usedColorIndices.size} / ${PALETTE_HEX.length}`;
     });
   </script>
 </body>
