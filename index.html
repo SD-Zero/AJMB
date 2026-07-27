@@ -89,7 +89,6 @@
       background-size: 16px 16px;
       background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
     }
-    /* Palette Section */
     .palette-section {
       background: #313244;
       padding: 20px;
@@ -122,12 +121,10 @@
       cursor: pointer;
       border: 1px solid rgba(255, 255, 255, 0.1);
     }
-    /* Dim unused colors once conversion completes */
     .palette-grid.has-converted .color-swatch {
       opacity: 0.25;
       transform: scale(0.9);
     }
-    /* Highlight used colors with glowing outline */
     .palette-grid.has-converted .color-swatch.used {
       opacity: 1;
       transform: scale(1.1);
@@ -141,7 +138,7 @@
 
   <div class="container">
     <h1>Masterblocks Color Converter</h1>
-    <p class="subtitle">Maps every pixel 1:1 to the closest Animal Jam Masterblock palette color</p>
+    <p class="subtitle">Maps every pixel 1:1 using CIELAB perceptual color matching</p>
     
     <div class="controls">
       <input type="file" id="imageLoader" accept="image/*">
@@ -169,7 +166,6 @@
   </div>
 
   <script>
-    // Full Animal Jam Masterblocks Palette (195 Hex Codes)
     const PALETTE_HEX = [
       "#FE1027", "#FB0060", "#AA01B7", "#6E1DC1", "#4044B9", "#0094F6", "#02A7F8", "#03BDDE", "#009C87", "#0DB740",
       "#7BC733", "#C9E202", "#FBED02", "#FABD03", "#FD8B00", "#FB3700", "#E7E3E4", "#9B9697", "#527688", "#FE344D",
@@ -195,14 +191,37 @@
       "#26333A"
     ];
 
-    // Pre-calculate RGB values for matching performance
-    const PALETTE_RGB = PALETTE_HEX.map(hex => {
+    // Convert RGB to CIELAB space
+    function rgbToLab(r, g, b) {
+      let r_s = r / 255, g_s = g / 255, b_s = b / 255;
+      r_s = (r_s > 0.04045) ? Math.pow((r_s + 0.055) / 1.055, 2.4) : r_s / 12.92;
+      g_s = (g_s > 0.04045) ? Math.pow((g_s + 0.055) / 1.055, 2.4) : g_s / 12.92;
+      b_s = (b_s > 0.04045) ? Math.pow((b_s + 0.055) / 1.055, 2.4) : b_s / 12.92;
+
+      let x = (r_s * 0.4124 + g_s * 0.3576 + b_s * 0.1805) * 100;
+      let y = (r_s * 0.2126 + g_s * 0.7152 + b_s * 0.0722) * 100;
+      let z = (r_s * 0.0193 + g_s * 0.1192 + b_s * 0.9505) * 100;
+
+      // D65 reference white point
+      x /= 95.047; y /= 100.000; z /= 108.883;
+
+      x = (x > 0.008856) ? Math.cbrt(x) : (7.787 * x) + (16 / 116);
+      y = (y > 0.008856) ? Math.cbrt(y) : (7.787 * y) + (16 / 116);
+      z = (z > 0.008856) ? Math.cbrt(z) : (7.787 * z) + (16 / 116);
+
+      return [(116 * y) - 16, 500 * (x - y), 200 * (y - z)];
+    }
+
+    // Pre-calculate RGB and LAB values for speed
+    const PALETTE_DATA = PALETTE_HEX.map(hex => {
       const cleanHex = hex.replace('#', '');
-      return [
-        parseInt(cleanHex.substring(0, 2), 16),
-        parseInt(cleanHex.substring(2, 4), 16),
-        parseInt(cleanHex.substring(4, 6), 16)
-      ];
+      const r = parseInt(cleanHex.substring(0, 2), 16);
+      const g = parseInt(cleanHex.substring(2, 4), 16);
+      const b = parseInt(cleanHex.substring(4, 6), 16);
+      return {
+        rgb: [r, g, b],
+        lab: rgbToLab(r, g, b)
+      };
     });
 
     const imageLoader = document.getElementById('imageLoader');
@@ -216,7 +235,6 @@
 
     let loadedImage = null;
 
-    // Render the 19x11 Palette Grid Swatches
     PALETTE_HEX.forEach((hex, index) => {
       const swatch = document.createElement('div');
       swatch.className = 'color-swatch';
@@ -245,23 +263,20 @@
       }
     });
 
-    // Human-weighted perceptual color distance formula
+    // CIELAB Delta E distance formula (perceptual match)
     function getClosestColorIndex(r, g, b) {
+      const [l1, a1, b1] = rgbToLab(r, g, b);
       let minDistance = Infinity;
       let closestIndex = 0;
 
-      for (let i = 0; i < PALETTE_RGB.length; i++) {
-        const [pr, pg, pb] = PALETTE_RGB[i];
+      for (let i = 0; i < PALETTE_DATA.length; i++) {
+        const [l2, a2, b2] = PALETTE_DATA[i].lab;
         
-        const rmean = (r + pr) / 2;
-        const dr = r - pr;
-        const dg = g - pg;
-        const db = b - pb;
-        
+        // Euclidean distance in LAB space (Delta E 1976)
         const distance = Math.sqrt(
-          (2 + rmean / 256) * dr * dr +
-          4 * dg * dg +
-          (2 + (255 - rmean) / 256) * db * db
+          Math.pow(l1 - l2, 2) +
+          Math.pow(a1 - a2, 2) +
+          Math.pow(b1 - b2, 2)
         );
 
         if (distance < minDistance) {
@@ -283,13 +298,11 @@
       const imgData = origCtx.getImageData(0, 0, width, height);
       const data = imgData.data;
 
-      // Track indexes of used colors
       const usedColorIndices = new Set();
 
       for (let i = 0; i < data.length; i += 4) {
         const alpha = data[i + 3];
 
-        // Skip transparent pixels
         if (alpha < 10) continue;
 
         const r = data[i];
@@ -297,7 +310,7 @@
         const b = data[i + 2];
 
         const matchIdx = getClosestColorIndex(r, g, b);
-        const [nr, ng, nb] = PALETTE_RGB[matchIdx];
+        const [nr, ng, nb] = PALETTE_DATA[matchIdx].rgb;
 
         data[i] = nr;
         data[i + 1] = ng;
@@ -308,7 +321,6 @@
 
       outCtx.putImageData(imgData, 0, 0);
 
-      // Update the 19x11 Palette Grid highlights
       paletteGrid.classList.add('has-converted');
       const swatches = paletteGrid.querySelectorAll('.color-swatch');
       
